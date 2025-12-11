@@ -76,11 +76,20 @@ async def calculate_student_test_score(
     github_url = ""
     try:
         # Create a filename based on student_test_id
-        filename = f"score_results_{student_test_id}.json"
-        github_url = score_service.push_to_github(result, filename)
+        filename = f"{student_test_id}.json"
+        github_url = await score_service.push_to_github(result, filename)
     except Exception as e:
         logger.error(f"Error pushing results to GitHub: {e}")
         raise HTTPException(status_code=502, detail=f"Error pushing results to GitHub: {str(e)}")
+
+    # 7. Update student_tests with result_url
+    try:
+        await supabase.table("student_tests").update({"result_url": github_url}).eq("id", student_test_id).execute()
+    except Exception as e:
+        logger.error(f"Error updating student_tests with result URL: {e}")
+        # Not raising 500 here because the file was successfully pushed.
+        # But we should probably alert the user or at least log it.
+        # Returning the URL anyway.
 
     return {
         "student_test_id": student_test_id,
