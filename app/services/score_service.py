@@ -165,7 +165,7 @@ class ScoreService:
             response.raise_for_status()
 
             resp_data = response.json()
-            # Return the html_url from the content object in the response
-            return resp_data.get("content", {}).get("html_url")
+            # Return the download_url from the content object in the response
+            return resp_data.get("content", {}).get("download_url")
 
 score_service = ScoreService()
