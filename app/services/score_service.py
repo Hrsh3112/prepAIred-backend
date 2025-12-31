@@ -2,11 +2,40 @@ import json
 import logging
 import base64
 import httpx
+from pathlib import Path
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 class ScoreService:
+    def __init__(self):
+        self.chapter_topics_map = self._load_chapter_topics()
+
+    def _load_chapter_topics(self):
+        try:
+            # Assuming chapters.json is in the root directory
+            # app/services/score_service.py -> app/services/ -> app/ -> root/
+            base_path = Path(__file__).resolve().parent.parent.parent
+            chapters_path = base_path / 'chapters.json'
+            if not chapters_path.exists():
+                logger.warning(f"chapters.json not found at {chapters_path}")
+                return {}
+
+            with open(chapters_path, 'r') as f:
+                data = json.load(f)
+
+            mapping = {}
+            for subject, chapters in data.items():
+                for chapter in chapters:
+                    code = chapter.get('code')
+                    topics = chapter.get('topics', {})
+                    if code:
+                        mapping[code] = topics
+            return mapping
+        except Exception as e:
+            logger.error(f"Error loading chapters.json: {e}")
+            return {}
+
     def calculate_score(self, ppt_data: dict, response_data: dict) -> dict:
         """
         Calculates scores based on the provided PPT data and user response data.
@@ -20,6 +49,8 @@ class ScoreService:
             positive_marks = section.get('marksPerQuestion', 0)
             # Handle typo in key as seen in original script
             negative_marks = section.get('negagiveMarksPerQuestion', 0)
+            if not negative_marks: # Handle if key is corrected in some jsons or missing
+                 negative_marks = section.get('negativeMarksPerQuestion', 0)
 
             sections_config[name] = {
                 'positive': positive_marks,
@@ -29,6 +60,31 @@ class ScoreService:
         attempt_comparison = []
         section_scores = {}
         chapter_scores = {}
+
+        # New metadata stats structure
+        metadata_stats = {
+            "correct": {
+                "difficulty": {},
+                "relevance": {},
+                "scary": {},
+                "lengthy": {},
+                "topics": {}
+            },
+            "incorrect": {
+                "difficulty": {},
+                "relevance": {},
+                "scary": {},
+                "lengthy": {},
+                "topics": {}
+            },
+            "unattempted": {
+                "difficulty": {},
+                "relevance": {},
+                "scary": {},
+                "lengthy": {},
+                "topics": {}
+            }
+        }
 
         # Initialize score aggregators
         for sec_name in sections_config:
@@ -55,9 +111,11 @@ class ScoreService:
             section_name = q.get('section')
             correct_ans = q.get('correctAnswer')
 
-            # Get chapter from tag2
+            # Get chapter from tag2 or chapterCode
             tags = q.get('tags', {})
-            chapter_tag = tags.get('tag2', 'Unknown')
+            chapter_tag = q.get('chapterCode')
+            if not chapter_tag:
+                chapter_tag = tags.get('tag2', 'Unknown')
 
             user_ans = response_data.get(uuid)
 
@@ -134,6 +192,35 @@ class ScoreService:
                 "marks_awarded": marks
             })
 
+            # --- Collect Metadata Stats ---
+            bin_key = status.lower() # correct, incorrect, unattempted
+
+            def update_meta(field, val):
+                if val is not None:
+                    val_str = str(val)
+                    metadata_stats[bin_key][field][val_str] = metadata_stats[bin_key][field].get(val_str, 0) + 1
+
+            # Difficulty
+            update_meta('difficulty', q.get('difficulty'))
+
+            # Relevance
+            update_meta('relevance', q.get('jeeMainsRelevance'))
+
+            # Scary/Calculation
+            update_meta('scary', q.get('scary'))
+            update_meta('lengthy', q.get('lengthy'))
+
+            # Topics
+            # Check for topicTags (new format)
+            topic_tags = q.get('topicTags')
+            if topic_tags and isinstance(topic_tags, list):
+                if chapter_tag and chapter_tag in self.chapter_topics_map:
+                    chapter_topics = self.chapter_topics_map[chapter_tag]
+                    for t_id in topic_tags:
+                        t_name = chapter_topics.get(str(t_id))
+                        if t_name:
+                            update_meta('topics', t_name)
+
         # Construct output with desired order
         output = {}
 
@@ -147,7 +234,10 @@ class ScoreService:
         output["section_scores"] = section_scores
         output["chapter_scores"] = chapter_scores
 
-        # 3. Total stats at the end
+        # 3. New Metadata Stats
+        output["metadata_stats"] = metadata_stats
+
+        # 4. Total stats at the end
         output["total_stats"] = {
             "total_score": total_score,
             "total_questions": total_questions_count,
