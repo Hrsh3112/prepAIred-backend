@@ -96,14 +96,14 @@ class AnalyticsService:
 
         # Update averages (accumulate scores)
         # Handle None values safely
-        current_phy_avg = current_data.get("phy_avg") or 0.0
-        current_chem_avg = current_data.get("chem_avg") or 0.0
-        current_math_avg = current_data.get("math_avg") or 0.0
-        current_accuracy = current_data.get("accuracy") or 0.0
+        current_phy_avg = current_data.get("phy_avg") or 0
+        current_chem_avg = current_data.get("chem_avg") or 0
+        current_math_avg = current_data.get("math_avg") or 0
+        current_accuracy = current_data.get("accuracy") or 0
 
-        new_phy_avg = current_phy_avg + phy_score
-        new_chem_avg = current_chem_avg + chem_score
-        new_math_avg = current_math_avg + math_score
+        new_phy_avg = int(current_phy_avg + phy_score)
+        new_chem_avg = int(current_chem_avg + chem_score)
+        new_math_avg = int(current_math_avg + math_score)
 
         # Ensure new_accuracy is also an int
         # The logic is doing SUM as per existing pattern
