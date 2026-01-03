@@ -27,6 +27,7 @@ class AnalyticsService:
         student_test = response.data[0]
         result_url = student_test.get("result_url")
         user_id = student_test.get("user_id")
+        test_id = student_test.get("test_id")
 
         if not result_url:
             raise ValueError(f"Result URL not found for test attempt: {test_attempt_id}")
@@ -34,16 +35,26 @@ class AnalyticsService:
         if not user_id:
              raise ValueError(f"User ID not found for test attempt: {test_attempt_id}")
 
-        # 2. Fetch Score JSON
+        # 2. Fetch Test details (for 99ile)
+        tests_response = await supabase.table("tests").select("*").eq("id", test_id).execute()
+        test_data = {}
+        if tests_response.data:
+            test_data = tests_response.data[0]
+
+        m99 = test_data.get("99ile") or 0
+
+        # 3. Fetch Score JSON
         async with httpx.AsyncClient() as client:
             score_response = await client.get(result_url)
             score_response.raise_for_status()
             score_data = score_response.json()
 
-        # 3. Process Scores
+        # 4. Process Scores
         section_scores = score_data.get("section_scores", {})
         total_stats = score_data.get("total_stats", {})
         sections = score_data.get("sections", [])
+
+        total_score = total_stats.get("total_score", 0)
 
         # Get ordered section names
         ordered_section_names = []
@@ -85,7 +96,24 @@ class AnalyticsService:
         # Round accuracy to integer to satisfy smallint column constraints
         accuracy_int = int(round(accuracy))
 
-        # 4. Update user_analytics
+        # Calculate Percentile
+        # P(M) = 100 * (1 - ((M99 - M)/M99)^k) where k = 1.87
+        percentile = 0.0
+        if m99 > 0:
+            k = 1.87
+            # If student score is greater than 99ile, term becomes negative, so we cap effective score at m99
+            # or we assume max percentile is 100.
+            effective_score = min(total_score, m99)
+
+            term = (m99 - effective_score) / m99
+            # Avoid complex number if term is negative (handled by min above)
+            # term should be between 0 and 1
+            percentile = 100 * (1 - (term ** k))
+
+        # Round percentile to integer for storage (assuming similar requirement as accuracy)
+        percentile_int = int(round(percentile))
+
+        # 5. Update user_analytics
         analytics_response = await supabase.table("user_analytics").select("*").eq("user_id", user_id).execute()
 
         current_data = {}
@@ -100,6 +128,7 @@ class AnalyticsService:
         current_chem_avg = current_data.get("chem_avg") or 0
         current_math_avg = current_data.get("math_avg") or 0
         current_accuracy = current_data.get("accuracy") or 0
+        current_percentile = current_data.get("percentile") or 0
 
         new_phy_avg = int(current_phy_avg + phy_score)
         new_chem_avg = int(current_chem_avg + chem_score)
@@ -109,13 +138,17 @@ class AnalyticsService:
         # The logic is doing SUM as per existing pattern
         new_accuracy = int(current_accuracy + accuracy_int)
 
+        # Update percentile accumulation
+        new_percentile_sum = int(current_percentile + percentile_int)
+
         analytics_update = {
             "user_id": user_id,
             "attempt_no": new_attempt_no,
             "phy_avg": new_phy_avg,
             "chem_avg": new_chem_avg,
             "math_avg": new_math_avg,
-            "accuracy": new_accuracy
+            "accuracy": new_accuracy,
+            "percentile": new_percentile_sum
             # history_url will be updated later
         }
 
@@ -134,7 +167,7 @@ class AnalyticsService:
                  raise ValueError("Failed to update user_analytics row")
             analytics_record = update_res.data[0]
 
-        # 5. History JSON
+        # 6. History JSON
         history_entry = {
             "test_attempt_id": test_attempt_id,
             "timestamp": datetime.utcnow().isoformat(),
@@ -142,11 +175,13 @@ class AnalyticsService:
             "chem_score": chem_score,
             "math_score": math_score,
             "accuracy": accuracy,
+            "percentile": percentile,
             "cumulative_stats": {
                 "phy_avg": new_phy_avg,
                 "chem_avg": new_chem_avg,
                 "math_avg": new_math_avg,
                 "accuracy": new_accuracy,
+                "percentile": new_percentile_sum,
                 "attempt_no": new_attempt_no
             }
         }
