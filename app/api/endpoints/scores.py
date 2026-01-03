@@ -7,6 +7,7 @@ from app.core.security import verify_token, TokenData
 from app.core.config import settings
 from app.core.supabase import db
 from app.services.score_service import score_service
+from app.services.analytics_service import analytics_service
 from app.schemas.score import ScoreResponse
 
 router = APIRouter()
@@ -145,5 +146,14 @@ async def calculate_student_test_score(
         # Not raising 500 here because the file was successfully pushed.
         # But we should probably alert the user or at least log it.
         # Returning the URL anyway.
+
+    # 8. Trigger Analytics (as requested: using the same test ID, after full completion of score calculation)
+    try:
+        logger.info(f"Triggering analytics for {student_test_id}")
+        await analytics_service.process_test_attempt(student_test_id, score_data=result)
+    except Exception as e:
+        logger.error(f"Error triggering analytics for {student_test_id}: {e}")
+        # We don't want to fail the score response if analytics fails,
+        # but we should log it.
 
     return ScoreResponse(student_test_id=student_test_id, github_url=github_url)

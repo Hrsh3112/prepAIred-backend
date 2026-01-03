@@ -11,7 +11,7 @@ from app.core.supabase import db
 logger = logging.getLogger(__name__)
 
 class AnalyticsService:
-    async def process_test_attempt(self, test_attempt_id: str) -> Dict[str, Any]:
+    async def process_test_attempt(self, test_attempt_id: str, score_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Processes a test attempt to update user analytics.
         """
@@ -44,10 +44,11 @@ class AnalyticsService:
         m99 = test_data.get("99ile") or 0
 
         # 3. Fetch Score JSON
-        async with httpx.AsyncClient() as client:
-            score_response = await client.get(result_url)
-            score_response.raise_for_status()
-            score_data = score_response.json()
+        if not score_data:
+            async with httpx.AsyncClient() as client:
+                score_response = await client.get(result_url)
+                score_response.raise_for_status()
+                score_data = score_response.json()
 
         # 4. Process Scores
         section_scores = score_data.get("section_scores", {})
