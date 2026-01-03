@@ -204,15 +204,111 @@ class AnalyticsService:
 
         new_history_url = await self._update_github_history(filename, history_entry)
 
-        # 6. Update history_url in DB
+        # 6. Chapter Stats JSON
+        chapter_scores = score_data.get("chapter_scores", {})
+        current_chapter_url = analytics_record.get("chapter_url")
+
+        new_chapter_url = await self._update_chapter_stats(user_id, chapter_scores)
+
+        # 7. Update URLs in DB
+        update_payload = {}
         if new_history_url != current_history_url:
-            await supabase.table("user_analytics").update({"history_url": new_history_url}).eq("user_id", user_id).execute()
+            update_payload["history_url"] = new_history_url
+        if new_chapter_url != current_chapter_url:
+            update_payload["chapter_url"] = new_chapter_url
+
+        if update_payload:
+            await supabase.table("user_analytics").update(update_payload).eq("user_id", user_id).execute()
 
         return {
             "message": "Analytics updated successfully",
             "user_id": user_id,
-            "history_url": new_history_url
+            "history_url": new_history_url,
+            "chapter_url": new_chapter_url
         }
+
+    async def _update_chapter_stats(self, user_id: str, new_chapter_scores: Dict[str, Any]) -> str:
+        filename = f"user_analytics/chapters/{user_id}.json"
+
+        if not settings.GITHUB_TOKEN or not settings.GITHUB_REPO:
+            raise ValueError("GITHUB_TOKEN and GITHUB_REPO must be set in configuration")
+
+        base_url = f"https://api.github.com/repos/{settings.GITHUB_REPO}/contents/{filename}"
+        headers = {
+            "Authorization": f"Bearer {settings.GITHUB_TOKEN}",
+            "Accept": "application/vnd.github.v3+json",
+            "X-GitHub-Api-Version": "2022-11-28"
+        }
+
+        async with httpx.AsyncClient() as client:
+            # 1. Fetch existing stats
+            stats_data = {"chapters": {}, "last_updated": ""}
+            sha = None
+
+            try:
+                get_response = await client.get(base_url, headers=headers)
+                if get_response.status_code == 200:
+                    data = get_response.json()
+                    sha = data.get("sha")
+                    content_encoded = data.get("content")
+                    if content_encoded:
+                        content_str = base64.b64decode(content_encoded).decode("utf-8")
+                        stats_data = json.loads(content_str)
+            except Exception as e:
+                logger.info(f"Chapter stats file {filename} likely does not exist or empty: {e}")
+
+            chapters = stats_data.get("chapters", {})
+            if not isinstance(chapters, dict):
+                chapters = {}
+
+            # 2. Update with new scores
+            for chapter_code, scores in new_chapter_scores.items():
+                if chapter_code not in chapters:
+                    chapters[chapter_code] = {
+                        "attempted": 0,
+                        "unattempted": 0,
+                        "correct": 0,
+                        "incorrect": 0,
+                        "total_questions": 0
+                    }
+
+                entry = chapters[chapter_code]
+
+                c_correct = scores.get("correct", 0)
+                c_incorrect = scores.get("incorrect", 0)
+                c_unattempted = scores.get("unattempted", 0)
+                c_total = scores.get("total_questions", 0)
+
+                entry["correct"] += c_correct
+                entry["incorrect"] += c_incorrect
+                entry["unattempted"] += c_unattempted
+                entry["total_questions"] += c_total
+                entry["attempted"] += (c_correct + c_incorrect)
+
+            # 3. Sort: least attempted at the top
+            sorted_chapters = dict(sorted(chapters.items(), key=lambda item: item[1].get("attempted", 0)))
+
+            stats_data["chapters"] = sorted_chapters
+            stats_data["last_updated"] = datetime.utcnow().isoformat()
+
+            # 4. Push to GitHub
+            content_str = json.dumps(stats_data, indent=4)
+            content_encoded = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
+
+            message = f"Update chapter stats for {user_id}"
+
+            payload = {
+                "message": message,
+                "content": content_encoded
+            }
+            if sha:
+                payload["sha"] = sha
+
+            put_response = await client.put(base_url, headers=headers, json=payload)
+            put_response.raise_for_status()
+
+            resp_data = put_response.json()
+            return resp_data.get("content", {}).get("download_url")
 
     async def _update_github_history(self, filename: str, new_entry: Dict) -> str:
         if not settings.GITHUB_TOKEN or not settings.GITHUB_REPO:
